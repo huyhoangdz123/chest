@@ -310,5 +310,3 @@ task.spawn(function()
         stopFarm("Nhặt được " .. rareItemName .. "!")
     end
 end)
-end,
-})
