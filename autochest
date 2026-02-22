@@ -1,0 +1,314 @@
+_G.ChestFarm_Running = true
+_G.ChestFarm_Version = "1.0"
+
+local Players           = game:GetService("Players")
+local TweenService      = game:GetService("TweenService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer       = Players.LocalPlayer
+local Character         = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+local HRP               = Character:WaitForChild("HumanoidRootPart")
+local Humanoid          = Character:WaitForChild("Humanoid")
+
+-- ════════════════════════════
+-- CONFIG
+-- ════════════════════════════
+local TweenSpeed   = 500      -- tốc độ di chuyển (stud/s)
+local PickupRange  = 8       -- khoảng cách để mở rương
+local ScanRange    = 5000000000000    -- range quét rương (toàn map)
+local TotalChests  = 0       -- đếm số rương đã mở
+
+-- ════════════════════════════
+-- RARE ITEMS
+-- ════════════════════════════
+local RARE_KEYWORDS = {
+    "god",
+    "chalice",
+    "fist",
+    "darkness",
+}
+
+local RARE_DISPLAY = {
+    ["god"]      = "God's Chalice",
+    ["chalice"]  = "God's Chalice",
+    ["fist"]     = "Fist of Darkness",
+    ["darkness"] = "Fist of Darkness",
+}
+
+local function checkRare(name)
+    if not name then return nil end
+    local lower = name:lower()
+    for _, kw in ipairs(RARE_KEYWORDS) do
+        if lower:find(kw) then
+            return RARE_DISPLAY[kw]
+        end
+    end
+    return nil
+end
+
+-- ════════════════════════════
+-- RARE DETECTION (real-time)
+-- ════════════════════════════
+local rareDetected  = false
+local rareItemName  = ""
+
+local function onItemAdded(item)
+    if not _G.ChestFarm_Running then return end
+    local rare = checkRare(item.Name)
+    if rare then
+        rareDetected = true
+        rareItemName = rare
+    end
+end
+
+-- Lắng nghe backpack
+LocalPlayer.Backpack.ChildAdded:Connect(onItemAdded)
+
+-- Lắng nghe character equip ngay
+local function bindCharacter(char)
+    char.ChildAdded:Connect(function(item)
+        if item:IsA("Tool") then onItemAdded(item) end
+    end)
+end
+bindCharacter(Character)
+LocalPlayer.CharacterAdded:Connect(function(char)
+    Character = char
+    task.wait(1.5)
+    HRP      = char:WaitForChild("HumanoidRootPart")
+    Humanoid = char:WaitForChild("Humanoid")
+    bindCharacter(char)
+    if _G.ChestFarm_Running then
+        print("[ChestFarm] Đã hồi sinh - tiếp tục farm...")
+    end
+end)
+
+-- ════════════════════════════
+-- UTILITY
+-- ════════════════════════════
+local function updateChar()
+    Character = LocalPlayer.Character
+    if not Character then return false end
+    HRP      = Character:FindFirstChild("HumanoidRootPart")
+    Humanoid = Character:FindFirstChild("Humanoid")
+    return HRP ~= nil and Humanoid ~= nil
+end
+
+local currentTween = nil
+
+local function tweenTo(pos)
+    if not updateChar() then return end
+    local dist = (HRP.Position - pos).Magnitude
+    if dist < 3 then return end
+    local duration = dist / TweenSpeed
+    if currentTween then currentTween:Cancel() end
+    currentTween = TweenService:Create(
+        HRP,
+        TweenInfo.new(duration, Enum.EasingStyle.Linear),
+        {CFrame = CFrame.new(pos + Vector3.new(0, 3, 0))}
+    )
+    currentTween:Play()
+    currentTween.Completed:Wait()
+end
+
+-- ════════════════════════════
+-- CHEST DETECTION
+-- ════════════════════════════
+local function isChest(obj)
+    local name = obj.Name:lower()
+    return name:find("chest") or name:find("treasure") or name:find("lootbox")
+end
+
+local function getChestPos(obj)
+    if obj:IsA("Model") then
+        local p = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
+        if p then return p.Position end
+    elseif obj:IsA("BasePart") then
+        return obj.Position
+    end
+    return nil
+end
+
+local function findChestsSorted()
+    if not updateChar() then return {} end
+    local list = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if isChest(obj) then
+            local pos = getChestPos(obj)
+            if pos then
+                local dist = (HRP.Position - pos).Magnitude
+                if dist <= ScanRange then
+                    table.insert(list, {obj = obj, pos = pos, dist = dist})
+                end
+            end
+        end
+    end
+    table.sort(list, function(a, b) return a.dist < b.dist end)
+    return list
+end
+
+-- ════════════════════════════
+-- OPEN CHEST
+-- ════════════════════════════
+local function openChest(obj)
+    if not obj or not obj.Parent then return end
+
+    for _, v in ipairs(obj:GetDescendants()) do
+        if v:IsA("ProximityPrompt") then
+            fireproximityprompt(v)
+            task.wait(0.2)
+            return
+        end
+    end
+
+    for _, v in ipairs(obj:GetDescendants()) do
+        if v:IsA("ClickDetector") then
+            fireclickdetector(v)
+            task.wait(0.2)
+            return
+        end
+    end
+
+    local remote = ReplicatedStorage:FindFirstChild("OpenChest")
+        or ReplicatedStorage:FindFirstChild("ChestOpen")
+        or ReplicatedStorage:FindFirstChild("Loot")
+    if remote and remote:IsA("RemoteEvent") then
+        remote:FireServer(obj)
+        task.wait(0.2)
+        return
+    end
+
+    local VIM = game:GetService("VirtualInputManager")
+    if VIM then
+        VIM:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+        task.wait(0.1)
+        VIM:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+    end
+end
+
+-- ════════════════════════════
+-- SCAN INVENTORY
+-- ════════════════════════════
+local function scanInventory()
+    for _, item in ipairs(LocalPlayer.Backpack:GetChildren()) do
+        local r = checkRare(item.Name)
+        if r then return r end
+    end
+    if Character then
+        for _, item in ipairs(Character:GetChildren()) do
+            if item:IsA("Tool") then
+                local r = checkRare(item.Name)
+                if r then return r end
+            end
+        end
+    end
+    return nil
+end
+
+-- ════════════════════════════
+-- STOP FARM
+-- ════════════════════════════
+local function stopFarm(reason)
+    _G.ChestFarm_Running = false
+    if currentTween then currentTween:Cancel() end
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print("[ChestFarm] ⛔ DỪNG FARM!")
+    if reason then
+        print("[ChestFarm] 🏆 Lý do: " .. reason)
+    end
+    print("[ChestFarm] 📦 Tổng rương đã mở: " .. TotalChests)
+    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+end
+
+-- ════════════════════════════
+-- ANTI AFK
+-- ════════════════════════════
+local VIM = game:GetService("VirtualInputManager")
+task.spawn(function()
+    while _G.ChestFarm_Running do
+        task.wait(55)
+        if VIM and _G.ChestFarm_Running then
+            VIM:SendKeyEvent(true, "Space", false, game)
+            task.wait(0.1)
+            VIM:SendKeyEvent(false, "Space", false, game)
+        end
+    end
+end)
+
+-- ════════════════════════════
+-- MAIN FARM LOOP
+-- ════════════════════════════
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+print("[ChestFarm] ✅ Script 1 đã load!")
+print("[ChestFarm] 🔄 Đang bắt đầu farm rương...")
+print("[ChestFarm] 🏆 Tự dừng khi ra: God's Chalice / Fist of Darkness")
+print("[ChestFarm] 💡 Chạy Script 2 để dừng thủ công")
+print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+task.spawn(function()
+    while _G.ChestFarm_Running do
+
+        -- ── Check đồ hiếm real-time ──
+        if rareDetected then
+            stopFarm("Nhặt được " .. rareItemName .. "!")
+            return
+        end
+
+        -- ── Cập nhật character ──
+        if not updateChar() then task.wait(1) continue end
+        if Humanoid.Health <= 0 then task.wait(2) continue end
+
+        -- ── Tìm rương ──
+        local chests = findChestsSorted()
+
+        if #chests == 0 then
+            print("[ChestFarm] ⏳ Không có rương - chờ spawn...")
+            task.wait(2)
+            continue
+        end
+
+        -- ── Mở từng rương ──
+        for _, chest in ipairs(chests) do
+            if not _G.ChestFarm_Running then break end
+            if rareDetected then break end
+            if not chest.obj.Parent then continue end
+            if not updateChar() then break end
+            if Humanoid.Health <= 0 then break end
+
+            local dist = (HRP.Position - chest.pos).Magnitude
+
+            -- Tween đến rương
+            if dist > PickupRange then
+                tweenTo(chest.pos)
+            end
+
+            task.wait(0.15)
+
+            -- Rương còn tồn tại?
+            if not chest.obj.Parent then continue end
+
+            -- Mở rương
+            openChest(chest.obj)
+            TotalChests = TotalChests + 1
+            print("[ChestFarm] 📦 Mở rương #" .. TotalChests)
+
+            task.wait(0.3)
+
+            -- Check đồ hiếm sau khi mở
+            if rareDetected then break end
+            local rare = scanInventory()
+            if rare then
+                rareDetected = true
+                rareItemName = rare
+                break
+            end
+        end
+
+        task.wait(0.05)
+    end
+
+    -- Nếu thoát loop do rareDetected
+    if rareDetected and _G.ChestFarm_Running then
+        stopFarm("Nhặt được " .. rareItemName .. "!")
+    end
+end)
+end,
+})
